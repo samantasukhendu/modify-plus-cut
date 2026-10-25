@@ -1,0 +1,10 @@
+{
+  "name": "modify-plus-cut",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {"dev": "vercel dev", "start": "vercel dev", "check": "node --check api/ai.js && node --check api/payment.js && node --check api/admin.js && node --check api/chat.js && node --check api/reviews.js"},
+  "dependencies": {"firebase-admin": "^13.5.0", "twilio": "^5.8.0"},
+  "devDependencies": {"vercel": "^41.7.8"},
+  "engines": {"node": ">=20"}
+}
