@@ -8,10 +8,10 @@
 - Home order: Modify, Cut, Premium, Help & Telegram, Reviews & Comments.
 - নতুন device ID-তে server-side free balance: Modify 20,000 এবং Cut 20,000 শব্দ। আলাদা balance; localStorage clear করলেই server balance reset হয় না।
 - প্রতি request-এ সর্বোচ্চ 20,000 input words।
-- India plans: ₹299 (500,000 + 500,000), ₹399 (700,000 + 700,000), ₹419 (1,000,000 + 1,000,000), PhonePe/Google Pay, 30 days.
-- Bangladesh plans: ৳419 (500,000 + 500,000), ৳519 (700,000 + 700,000), ৳619 (1,000,000 + 1,000,000), bKash, 30 days.
+- India plans: ₹199 (100,000 + 100,000), ₹299 (180,000 + 180,000), ₹399 (250,000 + 250,000), PhonePe/Google Pay, 30 days.
+- Bangladesh plans: ৳279 (100,000 + 100,000), ৳419 (180,000 + 180,000), ৳559 (250,000 + 250,000), bKash, 30 days.
 - কোনো annual plan নেই এবং app-এ UPI/bKash নম্বর দেখানো হয় না। Transaction ID pending হিসেবে জমা হয়; admin approve না করলে Prime চালু হয় না। একই UTR/Transaction ID hash-এর unique Firestore document ও Firestore transaction দিয়ে duplicate জমা আটকানো হয়; দ্বিতীয়বার দিলে “এই UTR আগেই ব্যবহার হয়েছে।” দেখায়।
-- Subscription expiry এবং per-feature premium balances server-এ থাকে। এক feature-এর credit শেষ হলেও অন্য feature-এর balance আলাদা থাকে। Premium শেষ হলে free credits পুনরায় দেওয়া হয় না (`everPremium` flag)।
+- Subscription expiry এবং per-feature premium balances server-এ থাকে না। এক feature-এর credit শেষ হলেও অন্য feature-এর balance আলাদা থাকে। Premium শেষ হলে free credits পুনরায় দেওয়া হয় না (`everPremium` flag)।
 - Admin login-এ একই IP থেকে ১৫ মিনিটে ৫টি ভুল চেষ্টার পর সাময়িক rate limit প্রয়োগ করা হয়। Admin login server-side environment variable দিয়ে শুরু হয়; পরবর্তীতে Admin Panel থেকে পাসওয়ার্ড পরিবর্তন করলে নতুন পাসওয়ার্ডের scrypt hash Firestore-এ থাকে (plain password নয়), session version বদলে পুরোনো session বাতিল হয়; cookie HttpOnly, Secure, SameSite=Strict। Admin payment approve/reject, users দেখা, chat reply/clear, review approve/reject করতে পারে। Chat clear payment records মুছে না।
 - Chat ও approved reviews Firestore-এ persist করে। Reviews admin approval ছাড়া public হয় না।
 - Optional SMS via Twilio; credentials না দিলে SMS disabled থাকবে, কিন্তু payment request pending হিসেবে database-এ সংরক্ষিত হবে।
