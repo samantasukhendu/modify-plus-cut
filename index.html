@@ -74,7 +74,22 @@ function clearInput(id){
 
 $('modifyInput').addEventListener('input',()=>updateWordCount('modify'));
 $('cutInput').addEventListener('input',()=>updateWordCount('cut'));
-async function runAI(feature){const input=$(feature==='modify'?'modifyInput':'cutInput'),box=$(feature==='modify'?'modifyResultBox':'cutResultBox'),out=$(feature==='modify'?'modifyResult':'cutResult'),count=$(feature==='modify'?'modifyCount':'cutCount');const text=input.value.trim();if(!text)return alert('Please paste your story first.');const words=(text.match(/\S+/g)||[]).length;if(words>20000)return alert(`এক ক্লিকে ১০-১৫ হাজার শব্দ সাপোর্টেড (সর্বোচ্চ)। আপনার ইনপুট: ${words.toLocaleString()} শব্দ।`);const btn=$(feature==='modify'?'modifyRunBtn':'cutRunBtn');try{if(btn){btn.disabled=true;btn.textContent='Processing…'}const data=await api('ai',{method:'POST',body:JSON.stringify({feature,text})});out.textContent=data.result;count.textContent=`Input: ${data.inputWords.toLocaleString()} words · Output: ${data.outputWords.toLocaleString()} words · Charged: ${data.chargedFrom}`;box.classList.remove('hidden');await refreshUsage()}catch(e){alert(e.message);if(/ক্রেডিট|প্যাকেজ|premium|balance|মেয়াদ/i.test(e.message))openPage('premium');await refreshUsage()}finally{if(btn){btn.disabled=false;btn.textContent=feature==='modify'?'Modify Now':'Cut Now'}}}
+async function runAI(feature){const input=$(feature==='modify'?'modifyInput':'cutInput'),box=$(feature==='modify'?'modifyResultBox':'cutResultBox'),out=$(feature==='modify'?'modifyResult':'cutResult'),count=$(feature==='modify'?'modifyCount':'cutCount');const text=input.value.trim();if(!text)return alert('Please paste your story first.');const words=(text.match(/\S+/g)||[]).length;if(words>20000)return alert(`এক ক্লিকে ১০-১৫ হাজার শব্দ সাপোর্টেড (সর্বোচ্চ)। আপনার ইনপুট: ${words.toLocaleString()} শব্দ।`);const btn=$(feature==='modify'?'modifyRunBtn':'cutRunBtn');try{if(btn){btn.disabled=true;btn.textContent='Processing…'}const data=await api('ai',{method:'POST',body:JSON.stringify({feature,text})});out.textContent=data.result;count.textContent=`Input: ${data.inputWords.toLocaleString()} words · Output: ${data.outputWords.toLocaleString()} words · Charged: ${data.chargedFrom}`;box.classList.remove('hidden');await refreshUsage()}catch(e){
+  alert(e.message);
+
+  const isCreditProblem =
+    e.message.startsWith('এই ফিচারের প্রিমিয়াম ক্রেডিটে এত শব্দ নেই') ||
+    e.message.startsWith('এই ফিচারের প্রিমিয়াম ক্রেডিট শেষ') ||
+    e.message.startsWith('আপনার প্রিমিয়াম মেয়াদ শেষ') ||
+    e.message.startsWith('এই ফিচারের অবশিষ্ট ফ্রি ক্রেডিটের চেয়ে ইনপুট বড়') ||
+    e.message.startsWith('এই ফিচারের ফ্রি ক্রেডিট শেষ');
+
+  if(isCreditProblem){
+    openPage('premium');
+  }
+
+  await refreshUsage();
+}finally{if(btn){btn.disabled=false;btn.textContent=feature==='modify'?'Modify Now':'Cut Now'}}}
 async function copyText(id){try{await navigator.clipboard.writeText($(id).textContent);alert('Copied!')}catch{alert('Copy failed; please select the text and copy manually.')}}async function shareText(id){const text=$(id).textContent;try{if(navigator.share)await navigator.share({title:'Modify Plus Cut',text});else await navigator.clipboard.writeText(text)}catch{}}
 function showPlans(country){currentCountry=country;if(!config)return;const plans=config.plans[country]||[];$('plans').innerHTML='';$('paymentForm').classList.add('hidden');plans.forEach(p=>{const el=document.createElement('div');el.className='plan';const fmt=n=>n.toLocaleString('en-IN');el.innerHTML=`<div class="pill">30 DAYS</div><div class="price">${p.currency==='INR'?'₹':'৳'}${p.amount}</div><p>${p.methods.join(' / ')}</p><ul><li>${fmt(p.modifyCredits)} Modify words</li><li>${fmt(p.cutCredits)} Cut words</li><li>Separate balances</li><li>Expires in 30 days</li></ul><button style="width:100%">Choose Package</button>`;el.querySelector('button').onclick=()=>choosePlan(p);$('plans').appendChild(el)})}
 function choosePlan(p){selectedPlan=p;$('selectedPlanText').textContent=`${p.currency==='INR'?'₹':'৳'}${p.amount} · ${p.modifyCredits.toLocaleString()} Modify + ${p.cutCredits.toLocaleString()} Cut · 30 days`;$('payMethod').innerHTML='';p.methods.forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;$('payMethod').appendChild(o)});$('paymentForm').classList.remove('hidden');$('paymentMessage').textContent='';$('trxInput').value='';updatePaymentDetails();$('paymentForm').scrollIntoView({behavior:'smooth'})}
