@@ -186,7 +186,7 @@ export default async function handler(req, res) {
     });
   }
 
-  const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+  const model = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
   let output;
 
   try {
@@ -210,12 +210,12 @@ export default async function handler(req, res) {
     if (!response.ok) {
       console.error('[Modify Plus Cut] Gemini API error:', response.status, payload.error?.message || 'No error message');
       if (response.status === 429) {
-        return json(res, 503, { error: 'Gemini API-এর ব্যবহারসীমা/কোটা শেষ বা সাময়িকভাবে ব্যস্ত। কিছুক্ষণ পরে আবার চেষ্টা করুন। কোনো ক্রেডিট কাটা হয়নি।' });
+        return json(res, 503, { error: 'সার্ভার সাময়িকভাবে ব্যস্ত। কিছুক্ষণ পরে আবার চেষ্টা করুন। কোনো ক্রেডিট কাটা হয়নি।' });
       }
       if (response.status === 401 || response.status === 403) {
-        return json(res, 503, { error: 'Gemini API key বা API permission-এ সমস্যা আছে। Vercel-এর GEMINI_API_KEY এবং Google AI Studio সেটিং পরীক্ষা করুন। কোনো ক্রেডিট কাটা হয়নি।' });
+        return json(res, 503, { error: 'সার্ভারে সমস্যা হচ্ছে ।কিছুক্ষন পরে আবার চেষ্টা করুন। কোনো ক্রেডিট কাটা হয়নি।' });
       }
-      return json(res, 502, { error: `Gemini AI অনুরোধ সম্পন্ন করতে পারেনি (HTTP ${response.status})। কোনো ক্রেডিট কাটা হয়নি।` });
+      return json(res, 502, { error: `অনুরোধ সম্পন্ন করতে পারেনি। কোনো ক্রেডিট কাটা হয়নি।` });
     }
 
     const candidate = payload.candidates?.[0];
