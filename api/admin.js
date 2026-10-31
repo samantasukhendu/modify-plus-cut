@@ -1,4 +1,3 @@
-
 import crypto from 'node:crypto';
 import {db,json,method,verifySession,sign,PLANS,FieldValue,adminPasswordRecord,hashPassword,passwordMatches} from '../lib/server.js';
 
@@ -84,7 +83,8 @@ export default async function handler(req,res){
    return json(res,200,{ok:true,message:'পাসওয়ার্ড পরিবর্তন হয়েছে। নিরাপত্তার জন্য আবার নতুন পাসওয়ার্ড দিয়ে লগইন করুন।'});
   }
 
-  if(!id && !(type==='payment')) return json(res,400,{error:'Missing item ID.'});
+  // পরিবর্তন ১: Payment-সহ সব PATCH অনুরোধে ID বাধ্যতামূলক।
+  if(!id) return json(res,400,{error:'Missing item ID.'});
 
   if(type==='payment'){
    const ref=d.collection('payments').doc(id);
@@ -121,6 +121,20 @@ export default async function handler(req,res){
     const ps=await tx.get(ref);
     if(!ps.exists||ps.data().status!=='pending')throw new Error('ALREADY_PROCESSED');
 
+    // পরিবর্তন ২: Transaction ID সঠিক Payment Request-এর কি না
+    // এবং সেটি এখনও pending অবস্থায় আছে কি না যাচাই।
+    const transactionRef = d.collection('transactionIds').doc(p.transactionHash);
+    const transactionSnap = await tx.get(transactionRef);
+
+    if (
+     !p.transactionHash ||
+     !transactionSnap.exists ||
+     transactionSnap.data().paymentId !== id ||
+     transactionSnap.data().status !== 'pending'
+    ) {
+     throw new Error('TRANSACTION_ID_INVALID');
+    }
+
     const ur=d.collection('users').doc(p.deviceId);
     const us=await tx.get(ur);
     const old=us.exists?us.data():{};
@@ -156,7 +170,7 @@ export default async function handler(req,res){
      verifiedBy:'admin'
     });
 
-    tx.set(d.collection('transactionIds').doc(p.transactionHash),{
+    tx.set(transactionRef,{
      status:'approved',
      paymentId:id,
      deviceId:p.deviceId,
