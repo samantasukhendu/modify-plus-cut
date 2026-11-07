@@ -28,42 +28,33 @@ async function refreshUsage(){try{usage=await api('usage');const fmt=n=>Number(n
 async function ownerUnlock(){const password=prompt('Enter owner access password');if(!password)return;try{const d=await api('owner',{method:'POST',body:JSON.stringify({password})});alert(d.message);await refreshUsage()}catch(e){alert(e.message)}}
 function countWordsLive(text){return (String(text||'').trim().match(/\S+/g)||[]).length}
 function updateWordCount(feature){const n=countWordsLive($(feature+'Input').value);$(feature+'WordCount').textContent=`শব্দ: ${n.toLocaleString('bn-BD')} / ১৫,০০০`;$(feature+'WordCount').style.color=n>15000?'#fda4af':'var(--muted)'}
-function clearInput(id,feature){$(id).value='';if(feature)updateWordCount(feature);$(id).focus()}
+function clearInput(id,feature){$(id).value='';if(feature){updateWordCount(feature);localStorage.removeItem('mpc_job_'+feature)}$(id).focus()}
 function clearResult(feature){const box=$(feature+'ResultBox'),out=$(feature+'Result'),count=$(feature+'Count');out.textContent='';count.textContent='';box.classList.add('hidden')}
-function showProgress(feature){const btn=$(feature+'RunBtn');let progress=$(feature+'Progress');if(!progress){progress=document.createElement('div');progress.id=feature+'Progress';progress.className='item';btn.parentNode.insertAdjacentElement('afterend',progress)}return progress}
-function paintProgress(progress,done,total,msg,failed=0,chunks=[]){const pct=total?Math.round(done/total*100):0;const labels={pending:'অপেক্ষায়',processing:'চলছে…',completed:'সম্পন্ন ✓',failed:'ব্যর্থ — Retry দরকার'};const cards=chunks.length?`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:7px;margin-top:12px">${chunks.map(c=>`<div style="background:#172235;border:1px solid ${c.status==='completed'?'#237a59':c.status==='failed'?'#9b3c52':'#34445e'};border-radius:9px;padding:8px;font-size:12px"><b>অংশ ${c.index+1}</b><div style="margin-top:4px;color:${c.status==='completed'?'#6ee7b7':c.status==='failed'?'#fda4af':'#cbd5e1'}">${labels[c.status]||'অপেক্ষায়'}</div></div>`).join('')}</div>`:'';progress.innerHTML=`<div style="display:flex;justify-content:space-between;gap:8px"><b>${msg}</b><b>${pct}%</b></div><div style="height:9px;background:#29344b;border-radius:99px;overflow:hidden;margin:9px 0"><div style="height:9px;width:${pct}%;background:#34d399;transition:width .25s"></div></div><small>${done} / ${total} অংশ সম্পন্ন · ${Math.max(0,total-done-failed)} বাকি · ${failed} ব্যর্থ · একসঙ্গে সর্বোচ্চ ৩টি কাজ</small>${cards}`}
-async function getJobStatus(jobId,includeChunks=false){return api('ai-jobs',{method:'POST',body:JSON.stringify({action:'status',jobId,includeChunks})})}
-async function runChunkBatch(feature,jobId,indices,progress,total){let polling=true;const poll=async()=>{while(polling){try{const st=await getJobStatus(jobId,true);paintProgress(progress,st.completedChunks,total,feature==='modify'?'গল্পের অংশগুলো Modify হচ্ছে…':'গল্পের সংলাপের অংশগুলো সাজানো হচ্ছে…',st.failedChunks,st.chunks||[])}catch{}await new Promise(r=>setTimeout(r,1000))}};const poller=poll();await Promise.all(indices.map(index=>api('ai-jobs',{method:'POST',body:JSON.stringify({action:'process',jobId,index})}).catch(()=>null)));polling=false;await poller;const st=await getJobStatus(jobId,true);paintProgress(progress,st.completedChunks,total,feature==='modify'?'গল্পের অংশগুলো Modify হচ্ছে…':'গল্পের সংলাপের অংশগুলো সাজানো হচ্ছে…',st.failedChunks,st.chunks||[]);return st}
-async function retryFailedChunks(feature,jobId,progress){const btn=$(feature+'RunBtn');btn.disabled=true;try{let st=await api('ai-jobs',{method:'POST',body:JSON.stringify({action:'status',jobId})});let total=st.totalChunks;let failed=[];
- // Ask the server for per-chunk statuses so retry buttons are based on persisted state.
- const details=await api('ai-jobs',{method:'POST',body:JSON.stringify({action:'status',jobId,includeChunks:true})});
- failed=(details.chunks||[]).filter(c=>c.status==='failed').map(c=>c.index);
- if(!failed.length && st.completedChunks===total){await finishExistingJob(feature,jobId,progress);return;}
- for(let i=0;i<failed.length;i+=3){const batch=failed.slice(i,i+3);await Promise.all(batch.map(index=>api('ai-jobs',{method:'POST',body:JSON.stringify({action:'retry',jobId,index})}).catch(()=>null)));const details=await getJobStatus(jobId,true);paintProgress(progress,details.completedChunks,total,'ব্যর্থ অংশগুলো আবার চেষ্টা করা হচ্ছে…',details.failedChunks,details.chunks||[])}
- st=await getJobStatus(jobId,true);paintProgress(progress,st.completedChunks,st.totalChunks,'ব্যর্থ অংশ আবার চেষ্টা করা হয়েছে',st.failedChunks,st.chunks||[]);
- if(st.completedChunks===st.totalChunks && !st.failedChunks) await finishExistingJob(feature,jobId,progress);
- else renderRetryControls(feature,jobId,progress,st);
- }catch(e){progress.insertAdjacentHTML('beforeend',`<p class="bad">${escapeHtml(e.message||'Status পাওয়া যায়নি')}</p>`)}finally{btn.disabled=false}}
-function escapeHtml(v){return String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function renderRetryControls(feature,jobId,progress,st){const old=progress.querySelector('.retry-controls');if(old)old.remove();const area=document.createElement('div');area.className='retry-controls';area.style.marginTop='10px';const p=document.createElement('p');p.className='small';p.textContent=`Job ID: ${jobId} · ${st.failedChunks||0}টি অংশে সমস্যা হয়েছে।`;area.appendChild(p);const b=document.createElement('button');b.className='pink';b.textContent='ব্যর্থ অংশ আবার চেষ্টা করুন';b.onclick=()=>retryFailedChunks(feature,jobId,progress);area.appendChild(b);progress.appendChild(area)}
-async function finishExistingJob(feature,jobId,progress){const final=await api('ai-jobs',{method:'POST',body:JSON.stringify({action:'finalize',jobId})});const out=$(feature+'Result'),box=$(feature+'ResultBox'),count=$(feature+'Count');out.textContent=final.result;count.textContent=`Input: ${final.inputWords.toLocaleString()} words · Output: ${final.outputWords.toLocaleString()} words · Charged: ${final.chargedFrom}`;box.classList.remove('hidden');localStorage.removeItem('mpc_job_'+feature);paintProgress(progress,1,1,'সম্পূর্ণ হয়েছে');await refreshUsage()}
+function showProgress(feature){const btn=$(feature+'RunBtn');let progress=$(feature+'Progress');if(!progress){progress=document.createElement('div');progress.id=feature+'Progress';progress.className='item';btn.parentNode.insertAdjacentElement('afterend',progress)}progress.textContent='আপনার গল্পটি প্রস্তুত করা হচ্ছে…';return progress}
+async function getJobStatus(jobId,includeChunks=false,includeResults=false){return api('ai-jobs',{method:'POST',body:JSON.stringify({action:'status',jobId,includeChunks,includeResults})})}
+async function runChunkBatch(feature,jobId,indices,progress,total){const requests=indices.map(index=>api('ai-jobs',{method:'POST',body:JSON.stringify({action:'process',jobId,index})}).then(()=>({index,ok:true})).catch(error=>({index,ok:false,error})));return Promise.all(requests)}
+async function finishExistingJob(feature,jobId,progress){const final=await api('ai-jobs',{method:'POST',body:JSON.stringify({action:'finalize',jobId})});const out=$(feature+'Result'),box=$(feature+'ResultBox'),count=$(feature+'Count');out.textContent=final.result;count.textContent=`Input: ${final.inputWords.toLocaleString()} words · Output: ${final.outputWords.toLocaleString()} words`;box.classList.remove('hidden');localStorage.removeItem('mpc_job_'+feature);progress.textContent='সম্পন্ন হয়েছে।';await refreshUsage()}
 async function runAI(feature){
  const input=$(feature==='modify'?'modifyInput':'cutInput'),box=$(feature+'ResultBox'),btn=$(feature+'RunBtn');
  const text=input.value.trim();if(!text)return alert('Please paste your story first.');
  const words=countWordsLive(text);if(words>15000)return alert(`এক ক্লিকে সর্বোচ্চ ১৫,০০০ শব্দ। আপনার ইনপুট: ${words.toLocaleString()} শব্দ।`);
- let jobId=localStorage.getItem('mpc_job_'+feature)||'';const progress=showProgress(feature);
+ const progress=showProgress(feature);let jobId='';let revealTimer=null;
  try{
-  btn.disabled=true;btn.textContent='Processing…';box.classList.add('hidden');
-  if(!jobId){paintProgress(progress,0,1,'কাজ শুরু হচ্ছে…');const started=await api('ai-jobs',{method:'POST',body:JSON.stringify({action:'start',feature,text})});jobId=started.jobId;localStorage.setItem('mpc_job_'+feature,jobId);}
-  let details=await getJobStatus(jobId,true);let st=details;const total=st.totalChunks;
-  paintProgress(progress,st.completedChunks,total,feature==='modify'?'গল্প Modify হচ্ছে…':'সংলাপ শনাক্ত হচ্ছে…',st.failedChunks,details.chunks||[]);
-  // মূল ক্রমে তিনটি করে ব্যাচ; ব্যাচের ভেতরে parallel, পরের ব্যাচ শুরু হবে আগেরটি শেষ হলে।
-  const pending=(details.chunks||[]).filter(c=>c.status!=='completed'&&c.status!=='failed').map(c=>c.index);
-  for(let i=0;i<pending.length;i+=3){st=await runChunkBatch(feature,jobId,pending.slice(i,i+3),progress,total)}
-  st=await getJobStatus(jobId,true);
-  if(st.completedChunks===total&&!st.failedChunks){paintProgress(progress,total,total,feature==='cut'?'সব অংশ প্রস্তুত; চরিত্র অনুযায়ী সাজানো হচ্ছে…':'ফলাফল একত্র করা হচ্ছে…');await finishExistingJob(feature,jobId,progress);}
-  else{paintProgress(progress,st.completedChunks,total,'কিছু অংশ অসম্পূর্ণ',st.failedChunks);renderRetryControls(feature,jobId,progress,st);}
- }catch(e){progress.innerHTML=`<b style="color:#fda4af">${escapeHtml(e.message||'কাজ সম্পন্ন হয়নি')}</b><p class="muted small">সব অংশ সফল না হওয়া পর্যন্ত ক্রেডিট কাটা হবে না।`;if(jobId){progress.innerHTML+=`<p class="small">Job ID: ${jobId}</p>`;const st=await api('ai-jobs',{method:'POST',body:JSON.stringify({action:'status',jobId})}).catch(()=>null);if(st)renderRetryControls(feature,jobId,progress,st)}}
+  btn.disabled=true;btn.textContent='Processing…';box.classList.add('hidden');$(feature+'Result').textContent='';
+  // প্রতিবার নতুন ইনপুটের জন্য নতুন Job; আগের Job ID পুনর্ব্যবহার করা হবে না।
+  localStorage.removeItem('mpc_job_'+feature);
+  const started=await api('ai-jobs',{method:'POST',body:JSON.stringify({action:'start',feature,text})});jobId=started.jobId;localStorage.setItem('mpc_job_'+feature,jobId);
+  const total=started.totalChunks;let nextToShow=0;let visible='';
+  if(feature==='modify'){
+   revealTimer=setInterval(async()=>{try{const st=await getJobStatus(jobId,true,true);const out=$(feature+'Result');while(nextToShow<st.chunks.length&&st.chunks[nextToShow].status==='completed'){visible+=(visible?'\n\n':'')+st.chunks[nextToShow].result;nextToShow++;}out.textContent=visible;}catch{}},900);
+  }
+  let details=await getJobStatus(jobId,true);let pending=(details.chunks||[]).filter(c=>c.status!=='completed').map(c=>c.index);
+  for(let i=0;i<pending.length;i+=3){const batch=await runChunkBatch(feature,jobId,pending.slice(i,i+3),progress,total);if(batch.some(x=>!x.ok))throw new Error('গল্পটি সম্পূর্ণ করা যায়নি। আবার চেষ্টা করুন।');}
+  const st=await getJobStatus(jobId,true);if(st.completedChunks!==total||st.failedChunks)throw new Error('গল্পটি সম্পূর্ণ করা যায়নি। আবার চেষ্টা করুন।');
+  progress.textContent=feature==='cut'?'সংলাপগুলো সাজানো হচ্ছে…':'ফলাফল সম্পূর্ণ করা হচ্ছে…';
+  if(revealTimer){clearInterval(revealTimer);revealTimer=null;}
+  await finishExistingJob(feature,jobId,progress);
+ }catch(e){if(revealTimer)clearInterval(revealTimer);progress.textContent=e.message||'কাজটি সম্পন্ন করা যায়নি। আপনার ক্রেডিট কাটা হয়নি।';if(jobId)localStorage.removeItem('mpc_job_'+feature);console.error('[Modify Plus Cut]',e);}
  finally{btn.disabled=false;btn.textContent=feature==='modify'?'Modify Now':'Cut Now'}
 }
 async function copyText(id){try{await navigator.clipboard.writeText($(id).textContent);alert('Copied!')}catch{alert('Copy failed; please select the text and copy manually.')}}async function shareText(id){const text=$(id).textContent;try{if(navigator.share)await navigator.share({title:'Modify Plus Cut',text});else await navigator.clipboard.writeText(text)}catch{}}
