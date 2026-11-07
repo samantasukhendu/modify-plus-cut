@@ -3,6 +3,7 @@ import { db, json, method, deviceId, activePremium, wordCount, FieldValue } from
 
 const MAX_WORDS = 20000;
 const CHUNK_WORDS = 1000;
+const MODIFY_CHUNK_WORDS = 2000;
 function getSystemInstruction(feature) {
   if (feature === 'modify') {
     return `তুমি Modify Plus Cut-এর বাংলা গল্প সম্পাদনা সহকারী। ব্যবহারকারী যে গল্প দেবেন, সেটিকে ভয়েস-ওভারের উপযোগী করে সাজাবে। নিচের নিয়মগুলো কঠোরভাবে মানবে:
@@ -97,6 +98,36 @@ async function gemini(text, feature, mode='chunk') {
   if(!out || p.candidates?.[0]?.finishReason==='MAX_TOKENS') throw new Error('AI_INCOMPLETE');
   return out;
 }
+async function geminiStreamToResponse(text, feature, res) {
+  const key=process.env.GEMINI_API_KEY; if(!key) throw new Error('AI_NOT_CONFIGURED');
+  const model=process.env.GEMINI_MODEL || 'gemini-flash-latest';
+  const system=getSystemInstruction(feature);
+  const controller=new AbortController();
+  const timeout=setTimeout(()=>controller.abort(),55000);
+  let response;
+  try {
+    response=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(key)}`,{
+      method:'POST',headers:{'Content-Type':'application/json'},signal:controller.signal,
+      body:JSON.stringify({systemInstruction:{parts:[{text:system}]},contents:[{role:'user',parts:[{text}]}],generationConfig:{temperature:0.1,maxOutputTokens:32768}})
+    });
+    if(!response.ok){const body=await response.text().catch(()=> '');const err=new Error(`Gemini HTTP ${response.status}: ${body.slice(0,500)}`);err.status=response.status;throw err;}
+    res.statusCode=200;res.setHeader('Content-Type','text/event-stream; charset=utf-8');res.setHeader('Cache-Control','no-cache, no-transform');res.setHeader('Connection','keep-alive');res.setHeader('X-Accel-Buffering','no');
+    let buffer='', full='';
+    const reader=response.body.getReader(); const decoder=new TextDecoder();
+    while(true){const {value,done}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});let split;
+      while((split=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,split).trim();buffer=buffer.slice(split+1);if(!line.startsWith('data:'))continue;const raw=line.slice(5).trim();if(!raw||raw==='[DONE]')continue;
+        let packet;try{packet=JSON.parse(raw)}catch{continue;}
+        const candidate=packet.candidates?.[0];
+        const delta=(candidate?.content?.parts||[]).map(x=>x.text||'').join('');
+        if(delta){full+=delta;res.write(`data: ${JSON.stringify({text:delta})}\n\n`);}
+        if(candidate?.finishReason==='MAX_TOKENS')throw new Error('AI_INCOMPLETE');
+      }
+    }
+    full=full.trim();if(!full)throw new Error('AI_EMPTY_RESULT');
+    res.write(`data: ${JSON.stringify({done:true})}\n\n`);return full;
+  } catch(e){if(e.name==='AbortError')throw new Error('AI_TIMEOUT');throw e;}
+  finally{clearTimeout(timeout);}
+}
 function jobRef(d,id){return d.collection('aiJobs').doc(id);}
 async function getJob(d,id,device){const ref=jobRef(d,id),s=await ref.get();if(!s.exists || s.data().deviceId!==device) return null;return {ref,data:s.data()};}
 
@@ -112,7 +143,7 @@ export default async function handler(req,res){
    const userRef=d.collection('users').doc(device),snap=await userRef.get();
    const user=snap.exists?snap.data():{deviceId:device,modifyFree:MAX_WORDS,cutFree:MAX_WORDS,modifyPremium:0,cutPremium:0,everPremium:false};
    const code=balanceCode(user,feature,words); if(code) return usageError(res,code,feature);
-   const chunks=splitStory(text); if(!chunks.length) return json(res,400,{error:'গল্প ভাগ করা যায়নি।'});
+   const chunks=splitStory(text, feature==='modify' ? MODIFY_CHUNK_WORDS : CHUNK_WORDS); if(!chunks.length) return json(res,400,{error:'গল্প ভাগ করা যায়নি।'});
    const id=crypto.randomUUID().replaceAll('-',''); const ref=jobRef(d,id);
    await ref.set({deviceId:device,feature,inputWords:words,totalChunks:chunks.length,completedChunks:0,failedChunks:0,status:'processing',charged:false,createdAt:FieldValue.serverTimestamp(),updatedAt:FieldValue.serverTimestamp()});
    const batch=d.batch(); chunks.forEach((chunk,i)=>batch.set(ref.collection('chunks').doc(String(i).padStart(5,'0')),{index:i,text:chunk,status:'pending',attempts:0})); await batch.commit();
@@ -125,6 +156,19 @@ export default async function handler(req,res){
    const snap=await ref.collection('chunks').orderBy('index').get();
    const rows=snap.docs.map(x=>x.data());
    return json(res,200,{jobId,status:data.status,totalChunks:data.totalChunks,completedChunks:rows.filter(x=>x.status==='completed').length,failedChunks:rows.filter(x=>x.status==='failed').length,charged:data.charged===true,result:data.result||null,inputWords:data.inputWords,outputWords:data.outputWords,chargedFrom:data.chargedFrom,...(req.body.includeChunks===true?{chunks:rows.map(x=>({index:x.index,status:x.status,attempts:x.attempts||0,error:x.error||null,...(req.body.includeResults===true&&x.status==='completed'?{result:x.result||''}:{})}))}:{})});
+  }
+  if(action==='process-stream'){
+   if(data.feature!=='modify') return json(res,400,{error:'Streaming এই পরীক্ষায় শুধু Modify-এর জন্য চালু আছে।'});
+   const index=Number(req.body.index); if(!Number.isInteger(index)||index<0||index>=data.totalChunks) return json(res,400,{error:'Chunk নম্বর সঠিক নয়।'});
+   const cr=ref.collection('chunks').doc(String(index).padStart(5,'0'));
+   const cs=await cr.get(); if(!cs.exists) return json(res,404,{error:'Chunk পাওয়া যায়নি।'});
+   if(cs.data().status==='completed') return json(res,409,{error:'এই অংশ আগে থেকেই সম্পন্ন হয়েছে।'});
+   await cr.set({status:'processing',attempts:FieldValue.increment(1),updatedAt:FieldValue.serverTimestamp()},{merge:true});
+   let result='';
+   try { result=await geminiStreamToResponse(cs.data().text,'modify',res); await cr.set({status:'completed',result,updatedAt:FieldValue.serverTimestamp(),error:null},{merge:true}); }
+   catch(e){await cr.set({status:'failed',error:String(e.message||'AI_ERROR').slice(0,300),updatedAt:FieldValue.serverTimestamp()},{merge:true});console.error('[ai-jobs] modify stream failed',e);if(!res.headersSent)return json(res,502,{code:'CHUNK_FAILED',error:'Modify অংশটি সম্পন্ন হয়নি।'});res.write(`event: error\ndata: ${JSON.stringify({error:'এই অংশটি সম্পন্ন করা যায়নি।'})}\n\n`);}
+   if(res.headersSent){res.end();return;}
+   return;
   }
   if(action==='process' || action==='retry'){
    const index=Number(req.body.index); if(!Number.isInteger(index)||index<0||index>=data.totalChunks) return json(res,400,{error:'Chunk নম্বর সঠিক নয়।'});
