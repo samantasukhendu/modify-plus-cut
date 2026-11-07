@@ -3,7 +3,9 @@ import { db, json, method, deviceId, activePremium, wordCount, FieldValue } from
 
 const MAX_WORDS = 20000;
 const CHUNK_WORDS = 1000;
-const MODIFY_CHUNK_WORDS = 2000;
+const MODIFY_CHUNK_WORDS = 1000;
+const MODELS = [...new Set([process.env.GEMINI_MODEL, 'gemini-2.0-flash', 'gemini-flash-latest', 'gemini-1.5-flash'].filter(Boolean))];
+function canTryNextModel(error) { return error?.message === 'AI_TIMEOUT' || [404, 503].includes(Number(error?.status)); }
 function getSystemInstruction(feature) {
   if (feature === 'modify') {
     return `তুমি Modify Plus Cut-এর বাংলা গল্প সম্পাদনা সহকারী। ব্যবহারকারী যে গল্প দেবেন, সেটিকে ভয়েস-ওভারের উপযোগী করে সাজাবে। নিচের নিয়মগুলো কঠোরভাবে মানবে:
@@ -81,52 +83,66 @@ function usageError(res, code, feature) {
 }
 async function gemini(text, feature, mode='chunk') {
   const key=process.env.GEMINI_API_KEY; if(!key) throw new Error('AI_NOT_CONFIGURED');
-  const model=process.env.GEMINI_MODEL || 'gemini-flash-latest';
   let system=getSystemInstruction(feature);
   if (feature==='cut' && mode==='chunk') system += '\n\nগুরুত্বপূর্ণ: এটি সম্পূর্ণ গল্পের একটি অংশ। এই অংশে যত চরিত্র/কথক অংশ আছে সেগুলোই সাজাও। কোনো চরিত্র বা ঘটনা এই অংশে না থাকলে কল্পনা করবে না। পরে সব অংশ একত্রে বৈশ্বিকভাবে সাজানো হবে।';
   if (feature==='cut' && mode==='aggregate') system += '\n\nএটি বিভিন্ন অংশের মধ্যবর্তী ফলাফল। সব অংশ মিলিয়ে একই চরিত্রের সংলাপ এক জায়গায় একত্র করো। চরিত্রের প্রথম উপস্থিতির ক্রম এবং প্রতিটি চরিত্রের সংলাপের মূল ক্রম বজায় রাখো।';
-  const controller=new AbortController();
-  const timeout=setTimeout(()=>controller.abort(),50000);
-  let r;
-  try { r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`,{
-    method:'POST',headers:{'Content-Type':'application/json'},signal:controller.signal,
-    body:JSON.stringify({systemInstruction:{parts:[{text:system}]},contents:[{role:'user',parts:[{text}]}],generationConfig:{temperature:0.1,maxOutputTokens:32768}})
-  }); } catch(e) { if(e.name==='AbortError') throw new Error('AI_TIMEOUT'); throw e; } finally { clearTimeout(timeout); }
-  const p=await r.json().catch(()=>({}));
-  if(!r.ok) { const e=new Error(p.error?.message || `Gemini HTTP ${r.status}`); e.status=r.status; throw e; }
-  const out=p.candidates?.[0]?.content?.parts?.map(x=>x.text||'').join('').trim();
-  if(!out || p.candidates?.[0]?.finishReason==='MAX_TOKENS') throw new Error('AI_INCOMPLETE');
-  return out;
+  let lastError;
+  for (const model of MODELS) {
+    const controller=new AbortController();
+    const timeout=setTimeout(()=>controller.abort(),50000);
+    try {
+      const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`,{
+        method:'POST',headers:{'Content-Type':'application/json'},signal:controller.signal,
+        body:JSON.stringify({systemInstruction:{parts:[{text:system}]},contents:[{role:'user',parts:[{text}]}],generationConfig:{temperature:0.1,maxOutputTokens:32768}})
+      });
+      const p=await r.json().catch(()=>({}));
+      if(!r.ok){const e=new Error(p.error?.message || `Gemini HTTP ${r.status}`);e.status=r.status;throw e;}
+      const out=p.candidates?.[0]?.content?.parts?.map(x=>x.text||'').join('').trim();
+      if(!out || p.candidates?.[0]?.finishReason==='MAX_TOKENS') throw new Error('AI_INCOMPLETE');
+      return out;
+    } catch(e) {
+      lastError=e.name==='AbortError'?new Error('AI_TIMEOUT'):e;
+      if(!canTryNextModel(lastError)) throw lastError;
+      console.warn(`[ai-jobs] model ${model} failed; trying fallback`,lastError.message);
+    } finally { clearTimeout(timeout); }
+  }
+  throw lastError || new Error('AI_ERROR');
 }
 async function geminiStreamToResponse(text, feature, res) {
   const key=process.env.GEMINI_API_KEY; if(!key) throw new Error('AI_NOT_CONFIGURED');
-  const model=process.env.GEMINI_MODEL || 'gemini-flash-latest';
   const system=getSystemInstruction(feature);
-  const controller=new AbortController();
-  const timeout=setTimeout(()=>controller.abort(),55000);
-  let response;
-  try {
-    response=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(key)}`,{
-      method:'POST',headers:{'Content-Type':'application/json'},signal:controller.signal,
-      body:JSON.stringify({systemInstruction:{parts:[{text:system}]},contents:[{role:'user',parts:[{text}]}],generationConfig:{temperature:0.1,maxOutputTokens:32768}})
-    });
-    if(!response.ok){const body=await response.text().catch(()=> '');const err=new Error(`Gemini HTTP ${response.status}: ${body.slice(0,500)}`);err.status=response.status;throw err;}
-    res.statusCode=200;res.setHeader('Content-Type','text/event-stream; charset=utf-8');res.setHeader('Cache-Control','no-cache, no-transform');res.setHeader('Connection','keep-alive');res.setHeader('X-Accel-Buffering','no');
-    let buffer='', full='';
-    const reader=response.body.getReader(); const decoder=new TextDecoder();
-    while(true){const {value,done}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});let split;
-      while((split=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,split).trim();buffer=buffer.slice(split+1);if(!line.startsWith('data:'))continue;const raw=line.slice(5).trim();if(!raw||raw==='[DONE]')continue;
-        let packet;try{packet=JSON.parse(raw)}catch{continue;}
-        const candidate=packet.candidates?.[0];
-        const delta=(candidate?.content?.parts||[]).map(x=>x.text||'').join('');
-        if(delta){full+=delta;res.write(`data: ${JSON.stringify({text:delta})}\n\n`);}
-        if(candidate?.finishReason==='MAX_TOKENS')throw new Error('AI_INCOMPLETE');
+  let lastError;
+  for (const model of MODELS) {
+    const controller=new AbortController();
+    const timeout=setTimeout(()=>controller.abort(),55000);
+    let emitted=false;
+    try {
+      const response=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(key)}`,{
+        method:'POST',headers:{'Content-Type':'application/json'},signal:controller.signal,
+        body:JSON.stringify({systemInstruction:{parts:[{text:system}]},contents:[{role:'user',parts:[{text}]}],generationConfig:{temperature:0.1,maxOutputTokens:32768}})
+      });
+      if(!response.ok){const body=await response.text().catch(()=> '');const err=new Error(`Gemini HTTP ${response.status}: ${body.slice(0,500)}`);err.status=response.status;throw err;}
+      res.statusCode=200;res.setHeader('Content-Type','text/event-stream; charset=utf-8');res.setHeader('Cache-Control','no-cache, no-transform');res.setHeader('Connection','keep-alive');res.setHeader('X-Accel-Buffering','no');
+      let buffer='',full='';
+      const reader=response.body.getReader();const decoder=new TextDecoder();
+      while(true){const {value,done}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});let split;
+        while((split=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,split).trim();buffer=buffer.slice(split+1);if(!line.startsWith('data:'))continue;const raw=line.slice(5).trim();if(!raw||raw==='[DONE]')continue;
+          let packet;try{packet=JSON.parse(raw)}catch{continue;}
+          const candidate=packet.candidates?.[0];const delta=(candidate?.content?.parts||[]).map(x=>x.text||'').join('');
+          if(delta){full+=delta;emitted=true;res.write(`data: ${JSON.stringify({text:delta})}\n\n`);}
+          if(candidate?.finishReason==='MAX_TOKENS')throw new Error('AI_INCOMPLETE');
+        }
       }
-    }
-    full=full.trim();if(!full)throw new Error('AI_EMPTY_RESULT');
-    res.write(`data: ${JSON.stringify({done:true})}\n\n`);return full;
-  } catch(e){if(e.name==='AbortError')throw new Error('AI_TIMEOUT');throw e;}
-  finally{clearTimeout(timeout);}
+      full=full.trim();if(!full)throw new Error('AI_EMPTY_RESULT');
+      res.write(`data: ${JSON.stringify({done:true})}\n\n`);return full;
+    } catch(e) {
+      lastError=e.name==='AbortError'?new Error('AI_TIMEOUT'):e;
+      // Once text has reached the browser, switching models could duplicate story text.
+      if(emitted || !canTryNextModel(lastError)) throw lastError;
+      console.warn(`[ai-jobs] streaming model ${model} failed before output; trying fallback`,lastError.message);
+    } finally { clearTimeout(timeout); }
+  }
+  throw lastError || new Error('AI_ERROR');
 }
 function jobRef(d,id){return d.collection('aiJobs').doc(id);}
 async function getJob(d,id,device){const ref=jobRef(d,id),s=await ref.get();if(!s.exists || s.data().deviceId!==device) return null;return {ref,data:s.data()};}
