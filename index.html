@@ -27,7 +27,7 @@ $('langBtn').onclick=()=>{lang=lang==='bn'?'en':'bn';translate()};
 async function refreshUsage(){try{usage=await api('usage');const fmt=n=>Number(n||0).toLocaleString();$('status').textContent=usage.ownerAccess?'Owner Lifetime Access':usage.premiumActive?`Prime · Modify ${fmt(usage.modifyPremium)} · Cut ${fmt(usage.cutPremium)}`:`Free · Modify ${fmt(usage.modifyFree)} · Cut ${fmt(usage.cutFree)}`;$('status').title=usage.subscriptionExpiresAt?'Expires: '+usage.subscriptionExpiresAt:''}catch(e){$('status').textContent='Account status unavailable'}}
 async function ownerUnlock(){const password=prompt('Enter owner access password');if(!password)return;try{const d=await api('owner',{method:'POST',body:JSON.stringify({password})});alert(d.message);await refreshUsage()}catch(e){alert(e.message)}}
 function countWordsLive(text){return (String(text||'').trim().match(/\S+/g)||[]).length}
-function updateWordCount(feature){const n=countWordsLive($(feature+'Input').value);$(feature+'WordCount').textContent=`শব্দ: ${n.toLocaleString('bn-BD')} / ২০,০০০`;$(feature+'WordCount').style.color=n>20000?'#fda4af':'var(--muted)'}
+function updateWordCount(feature){const n=countWordsLive($(feature+'Input').value);$(feature+'WordCount').textContent=`শব্দ: ${n.toLocaleString('bn-BD')} / ১৫,০০০`;$(feature+'WordCount').style.color=n>15000?'#fda4af':'var(--muted)'}
 function clearInput(id,feature){$(id).value='';if(feature)updateWordCount(feature);$(id).focus()}
 function clearResult(feature){const box=$(feature+'ResultBox'),out=$(feature+'Result'),count=$(feature+'Count');out.textContent='';count.textContent='';box.classList.add('hidden')}
 function showProgress(feature){const btn=$(feature+'RunBtn');let progress=$(feature+'Progress');if(!progress){progress=document.createElement('div');progress.id=feature+'Progress';progress.className='item';btn.parentNode.insertAdjacentElement('afterend',progress)}return progress}
@@ -50,7 +50,7 @@ async function finishExistingJob(feature,jobId,progress){const final=await api('
 async function runAI(feature){
  const input=$(feature==='modify'?'modifyInput':'cutInput'),box=$(feature+'ResultBox'),btn=$(feature+'RunBtn');
  const text=input.value.trim();if(!text)return alert('Please paste your story first.');
- const words=countWordsLive(text);if(words>20000)return alert(`এক ক্লিকে সর্বোচ্চ ২০,০০০ শব্দ। আপনার ইনপুট: ${words.toLocaleString()} শব্দ।`);
+ const words=countWordsLive(text);if(words>15000)return alert(`এক ক্লিকে সর্বোচ্চ ১৫,০০০ শব্দ। আপনার ইনপুট: ${words.toLocaleString()} শব্দ।`);
  let jobId=localStorage.getItem('mpc_job_'+feature)||'';const progress=showProgress(feature);
  try{
   btn.disabled=true;btn.textContent='Processing…';box.classList.add('hidden');
