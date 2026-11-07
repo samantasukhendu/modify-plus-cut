@@ -27,34 +27,46 @@ $('langBtn').onclick=()=>{lang=lang==='bn'?'en':'bn';translate()};
 async function refreshUsage(){try{usage=await api('usage');const fmt=n=>Number(n||0).toLocaleString();$('status').textContent=usage.ownerAccess?'Owner Lifetime Access':usage.premiumActive?`Prime · Modify ${fmt(usage.modifyPremium)} · Cut ${fmt(usage.cutPremium)}`:`Free · Modify ${fmt(usage.modifyFree)} · Cut ${fmt(usage.cutFree)}`;$('status').title=usage.subscriptionExpiresAt?'Expires: '+usage.subscriptionExpiresAt:''}catch(e){$('status').textContent='Account status unavailable'}}
 async function ownerUnlock(){const password=prompt('Enter owner access password');if(!password)return;try{const d=await api('owner',{method:'POST',body:JSON.stringify({password})});alert(d.message);await refreshUsage()}catch(e){alert(e.message)}}
 function countWordsLive(text){return (String(text||'').trim().match(/\S+/g)||[]).length}
-function updateWordCount(feature){const n=countWordsLive($(feature+'Input').value);$(feature+'WordCount').textContent=`শব্দ: ${n.toLocaleString('bn-BD')} / ১৫,০০০`;$(feature+'WordCount').style.color=n>15000?'#fda4af':'var(--muted)'}
+function updateWordCount(feature){const n=countWordsLive($(feature+'Input').value);$(feature+'WordCount').textContent=`শব্দ: ${n.toLocaleString('bn-BD')} / ২০,০০০`;$(feature+'WordCount').style.color=n>20000?'#fda4af':'var(--muted)'}
 function clearInput(id,feature){$(id).value='';if(feature){updateWordCount(feature);localStorage.removeItem('mpc_job_'+feature)}$(id).focus()}
 function clearResult(feature){const box=$(feature+'ResultBox'),out=$(feature+'Result'),count=$(feature+'Count');out.textContent='';count.textContent='';box.classList.add('hidden')}
 function showProgress(feature){const btn=$(feature+'RunBtn');let progress=$(feature+'Progress');if(!progress){progress=document.createElement('div');progress.id=feature+'Progress';progress.className='item';btn.parentNode.insertAdjacentElement('afterend',progress)}progress.textContent='আপনার গল্পটি প্রস্তুত করা হচ্ছে…';return progress}
 async function getJobStatus(jobId,includeChunks=false,includeResults=false){return api('ai-jobs',{method:'POST',body:JSON.stringify({action:'status',jobId,includeChunks,includeResults})})}
 async function runChunkBatch(feature,jobId,indices,progress,total){const requests=indices.map(index=>api('ai-jobs',{method:'POST',body:JSON.stringify({action:'process',jobId,index})}).then(()=>({index,ok:true})).catch(error=>({index,ok:false,error})));return Promise.all(requests)}
 async function finishExistingJob(feature,jobId,progress){const final=await api('ai-jobs',{method:'POST',body:JSON.stringify({action:'finalize',jobId})});const out=$(feature+'Result'),box=$(feature+'ResultBox'),count=$(feature+'Count');out.textContent=final.result;count.textContent=`Input: ${final.inputWords.toLocaleString()} words · Output: ${final.outputWords.toLocaleString()} words`;box.classList.remove('hidden');localStorage.removeItem('mpc_job_'+feature);progress.textContent='সম্পন্ন হয়েছে।';await refreshUsage()}
+async function streamModifyPart(jobId,index,out){
+ const response=await fetch('/api/ai-jobs',{method:'POST',headers:{'Content-Type':'application/json','X-Device-ID':getDeviceId()},credentials:'same-origin',body:JSON.stringify({action:'process-stream',jobId,index})});
+ if(!response.ok){let d={};try{d=await response.json()}catch{}throw new Error(d.error||`Request failed (${response.status})`)}
+ if(!response.body)throw new Error('এই ব্রাউজারে Streaming সমর্থিত নয়।');
+ const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='',part='';
+ while(true){const {value,done}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});let boundary;
+  while((boundary=buffer.indexOf('\n\n'))>=0){const block=buffer.slice(0,boundary);buffer=buffer.slice(boundary+2);if(block.startsWith('event: error')){const line=block.split('\n').find(x=>x.startsWith('data:'));let d={};try{d=JSON.parse(line.slice(5).trim())}catch{}throw new Error(d.error||'এই অংশটি সম্পন্ন করা যায়নি।')}
+   for(const line of block.split('\n'))if(line.startsWith('data:')){let d={};try{d=JSON.parse(line.slice(5).trim())}catch{}if(d.text){part+=d.text;out.textContent+=(d.text);out.scrollTop=out.scrollHeight}}
+  }
+ }
+ return part.trim();
+}
 async function runAI(feature){
  const input=$(feature==='modify'?'modifyInput':'cutInput'),box=$(feature+'ResultBox'),btn=$(feature+'RunBtn');
  const text=input.value.trim();if(!text)return alert('Please paste your story first.');
- const words=countWordsLive(text);if(words>15000)return alert(`এক ক্লিকে সর্বোচ্চ ১৫,০০০ শব্দ। আপনার ইনপুট: ${words.toLocaleString()} শব্দ।`);
- const progress=showProgress(feature);let jobId='';let revealTimer=null;
+ const words=countWordsLive(text);if(words>20000)return alert(`এক ক্লিকে সর্বোচ্চ ২০,০০০ শব্দ। আপনার ইনপুট: ${words.toLocaleString()} শব্দ।`);
+ const progress=showProgress(feature);if(feature==='modify')progress.classList.add('hidden');let jobId='';
  try{
-  btn.disabled=true;btn.textContent='Processing…';box.classList.add('hidden');$(feature+'Result').textContent='';
-  // প্রতিবার নতুন ইনপুটের জন্য নতুন Job; আগের Job ID পুনর্ব্যবহার করা হবে না।
+  btn.disabled=true;btn.textContent='Processing…';box.classList.remove('hidden');$(feature+'Result').textContent='';$(feature+'Count').textContent='';
   localStorage.removeItem('mpc_job_'+feature);
   const started=await api('ai-jobs',{method:'POST',body:JSON.stringify({action:'start',feature,text})});jobId=started.jobId;localStorage.setItem('mpc_job_'+feature,jobId);
-  const total=started.totalChunks;let nextToShow=0;let visible='';
   if(feature==='modify'){
-   revealTimer=setInterval(async()=>{try{const st=await getJobStatus(jobId,true,true);const out=$(feature+'Result');while(nextToShow<st.chunks.length&&st.chunks[nextToShow].status==='completed'){visible+=(visible?'\n\n':'')+st.chunks[nextToShow].result;nextToShow++;}out.textContent=visible;}catch{}},900);
+   const out=$('modifyResult');
+   for(let i=0;i<started.totalChunks;i++){
+    const part=await streamModifyPart(jobId,i,out);
+    if(i<started.totalChunks-1)out.textContent+='\n\n';
+   }
+  }else{
+   let details=await getJobStatus(jobId,true);let pending=(details.chunks||[]).filter(c=>c.status!=='completed').map(c=>c.index);
+   for(let i=0;i<pending.length;i+=3){const batch=await runChunkBatch(feature,jobId,pending.slice(i,i+3),progress,started.totalChunks);if(batch.some(x=>!x.ok))throw new Error('গল্পটি সম্পূর্ণ করা যায়নি। আবার চেষ্টা করুন।');}
   }
-  let details=await getJobStatus(jobId,true);let pending=(details.chunks||[]).filter(c=>c.status!=='completed').map(c=>c.index);
-  for(let i=0;i<pending.length;i+=3){const batch=await runChunkBatch(feature,jobId,pending.slice(i,i+3),progress,total);if(batch.some(x=>!x.ok))throw new Error('গল্পটি সম্পূর্ণ করা যায়নি। আবার চেষ্টা করুন।');}
-  const st=await getJobStatus(jobId,true);if(st.completedChunks!==total||st.failedChunks)throw new Error('গল্পটি সম্পূর্ণ করা যায়নি। আবার চেষ্টা করুন।');
-  progress.textContent=feature==='cut'?'সংলাপগুলো সাজানো হচ্ছে…':'ফলাফল সম্পূর্ণ করা হচ্ছে…';
-  if(revealTimer){clearInterval(revealTimer);revealTimer=null;}
   await finishExistingJob(feature,jobId,progress);
- }catch(e){if(revealTimer)clearInterval(revealTimer);progress.textContent=e.message||'কাজটি সম্পন্ন করা যায়নি। আপনার ক্রেডিট কাটা হয়নি।';if(jobId)localStorage.removeItem('mpc_job_'+feature);console.error('[Modify Plus Cut]',e);}
+ }catch(e){progress.textContent=feature==='modify'?'গল্পটি সম্পূর্ণ করা যায়নি। আপনার ক্রেডিট কাটা হয়নি।':(e.message||'কাজটি সম্পন্ন করা যায়নি।');if(feature==='modify')progress.classList.add('hidden');if(jobId)localStorage.removeItem('mpc_job_'+feature);console.error('[Modify Plus Cut]',e);}
  finally{btn.disabled=false;btn.textContent=feature==='modify'?'Modify Now':'Cut Now'}
 }
 async function copyText(id){try{await navigator.clipboard.writeText($(id).textContent);alert('Copied!')}catch{alert('Copy failed; please select the text and copy manually.')}}async function shareText(id){const text=$(id).textContent;try{if(navigator.share)await navigator.share({title:'Modify Plus Cut',text});else await navigator.clipboard.writeText(text)}catch{}}
