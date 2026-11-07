@@ -7,7 +7,7 @@ function getSystemInstruction(feature) {
   if (feature === 'modify') {
     return `তুমি Modify Plus Cut-এর বাংলা গল্প সম্পাদনা সহকারী। ব্যবহারকারী যে গল্প দেবেন, সেটিকে ভয়েস-ওভারের উপযোগী করে সাজাবে। নিচের নিয়মগুলো কঠোরভাবে মানবে:
 
-১. গল্পের কোনো বাক্য, ঘটনা, সংলাপ, বর্ণনা, অনুচ্ছেদ বা বাক্যের ক্রম নিজের মতো করে লিখবে না, ছোট করবে না, বড় করবে না, বাদ দেবে না এবং নতুন কিছু যোগ করবে না।
+১. গল্পের কোনো বাক্য, ঘটনা, সংলাপ, বর্ণনা, অনুচ্ছেদ বা বাক্যের ক্রম নিজের মতো করে লিখবে না, ছোট করবে না, বড় করবে না, বাদ দেবে না এবং নতুন কিছু যোগ করবে।
 ২. মূল গল্পের শব্দ ও বাক্য যথাসম্ভব হুবহু রাখবে। কেবল স্পষ্ট বানানভুল সংশোধন করবে। প্রয়োজন হলে যতিচিহ্ন ঠিক করবে। বানান সংশোধনের বাইরে শব্দের পছন্দ বা বাক্যগঠন বদলাবে না।
 ৩. বর্ণনামূলক অংশের আগে “কথক:” লিখবে।
 ৪. কোনো চরিত্রের কথা বা সংলাপের আগে সেই চরিত্রের নাম লিখবে, যেমন “রাহুল:”. গল্পে নাম জানা না থাকলে নিজের থেকে নাম বানাবে না; উপযুক্ত সাধারণ পরিচয় ব্যবহার করবে, যেমন “অজ্ঞাত ব্যক্তি:”.
@@ -84,10 +84,13 @@ async function gemini(text, feature, mode='chunk') {
   let system=getSystemInstruction(feature);
   if (feature==='cut' && mode==='chunk') system += '\n\nগুরুত্বপূর্ণ: এটি সম্পূর্ণ গল্পের একটি অংশ। এই অংশে যত চরিত্র/কথক অংশ আছে সেগুলোই সাজাও। কোনো চরিত্র বা ঘটনা এই অংশে না থাকলে কল্পনা করবে না। পরে সব অংশ একত্রে বৈশ্বিকভাবে সাজানো হবে।';
   if (feature==='cut' && mode==='aggregate') system += '\n\nএটি বিভিন্ন অংশের মধ্যবর্তী ফলাফল। সব অংশ মিলিয়ে একই চরিত্রের সংলাপ এক জায়গায় একত্র করো। চরিত্রের প্রথম উপস্থিতির ক্রম এবং প্রতিটি চরিত্রের সংলাপের মূল ক্রম বজায় রাখো।';
-  const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`,{
-    method:'POST',headers:{'Content-Type':'application/json'},
+  const controller=new AbortController();
+  const timeout=setTimeout(()=>controller.abort(),50000);
+  let r;
+  try { r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`,{
+    method:'POST',headers:{'Content-Type':'application/json'},signal:controller.signal,
     body:JSON.stringify({systemInstruction:{parts:[{text:system}]},contents:[{role:'user',parts:[{text}]}],generationConfig:{temperature:0.1,maxOutputTokens:32768}})
-  });
+  }); } catch(e) { if(e.name==='AbortError') throw new Error('AI_TIMEOUT'); throw e; } finally { clearTimeout(timeout); }
   const p=await r.json().catch(()=>({}));
   if(!r.ok) { const e=new Error(p.error?.message || `Gemini HTTP ${r.status}`); e.status=r.status; throw e; }
   const out=p.candidates?.[0]?.content?.parts?.map(x=>x.text||'').join('').trim();
@@ -100,7 +103,7 @@ async function getJob(d,id,device){const ref=jobRef(d,id),s=await ref.get();if(!
 export default async function handler(req,res){
  if(!method(req,res,['POST'])) return;
  const device=deviceId(req); if(!device) return json(res,400,{error:'Device ID সঠিক নয়।'});
- const {action}=req.body||{}; const d=db();
+ const {action}=req.body||{}; const d=db(); let featureForError=req.body?.feature;
  try {
   if(action==='start'){
    const feature=req.body.feature, text=String(req.body.text||'').trim();
@@ -117,11 +120,11 @@ export default async function handler(req,res){
   }
   const jobId=String(req.body.jobId||''); if(!/^[a-f0-9]{32}$/.test(jobId)) return json(res,400,{error:'Job ID সঠিক নয়।'});
   const found=await getJob(d,jobId,device); if(!found) return json(res,404,{error:'কাজটি পাওয়া যায়নি।'});
-  const {ref,data}=found;
+  const {ref,data}=found; featureForError=data.feature;
   if(action==='status'){
    const snap=await ref.collection('chunks').orderBy('index').get();
    const rows=snap.docs.map(x=>x.data());
-   return json(res,200,{jobId,status:data.status,totalChunks:data.totalChunks,completedChunks:rows.filter(x=>x.status==='completed').length,failedChunks:rows.filter(x=>x.status==='failed').length,charged:data.charged===true,result:data.result||null,inputWords:data.inputWords,outputWords:data.outputWords,chargedFrom:data.chargedFrom,...(req.body.includeChunks===true?{chunks:rows.map(x=>({index:x.index,status:x.status,attempts:x.attempts||0,error:x.error||null}))}:{})});
+   return json(res,200,{jobId,status:data.status,totalChunks:data.totalChunks,completedChunks:rows.filter(x=>x.status==='completed').length,failedChunks:rows.filter(x=>x.status==='failed').length,charged:data.charged===true,result:data.result||null,inputWords:data.inputWords,outputWords:data.outputWords,chargedFrom:data.chargedFrom,...(req.body.includeChunks===true?{chunks:rows.map(x=>({index:x.index,status:x.status,attempts:x.attempts||0,error:x.error||null,...(req.body.includeResults===true&&x.status==='completed'?{result:x.result||''}:{})}))}:{})});
   }
   if(action==='process' || action==='retry'){
    const index=Number(req.body.index); if(!Number.isInteger(index)||index<0||index>=data.totalChunks) return json(res,400,{error:'Chunk নম্বর সঠিক নয়।'});
@@ -159,7 +162,7 @@ export default async function handler(req,res){
   }
   return json(res,400,{error:'অজানা action।'});
  }catch(e){
-  if(['PREMIUM_BALANCE_TOO_LOW','PREMIUM_BALANCE_EMPTY','SUBSCRIPTION_EXPIRED','BALANCE_TOO_LOW','BALANCE_EMPTY'].includes(e.message)) return usageError(res,e.message,found?.data?.feature||req.body.feature);
+  if(['PREMIUM_BALANCE_TOO_LOW','PREMIUM_BALANCE_EMPTY','SUBSCRIPTION_EXPIRED','BALANCE_TOO_LOW','BALANCE_EMPTY'].includes(e.message)) return usageError(res,e.message,featureForError);
   console.error('[ai-jobs] server error',e); return json(res,503,{code:'SERVER_BUSY',error:'সার্ভার সাময়িকভাবে ব্যস্ত। কিছুক্ষণ পরে আবার চেষ্টা করুন।'});
  }
 }
