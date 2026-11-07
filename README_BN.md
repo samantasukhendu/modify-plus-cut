@@ -8,10 +8,10 @@
 - Home order: Modify, Cut, Premium, Help & Telegram, Reviews & Comments.
 - নতুন device ID-তে server-side free balance: Modify 20,000 এবং Cut 20,000 শব্দ। আলাদা balance; localStorage clear করলেই server balance reset হয় না।
 - প্রতি request-এ সর্বোচ্চ 20,000 input words।
-- India plans: ₹199 (100,000 + 100,000), ₹299 (180,000 + 180,000), ₹399 (250,000 + 250,000), PhonePe/Google Pay, 30 days.
-- Bangladesh plans: ৳279 (100,000 + 100,000), ৳419 (180,000 + 180,000), ৳559 (250,000 + 250,000), bKash, 30 days.
+- India plans: ₹299 (500,000 + 500,000), ₹399 (700,000 + 700,000), ₹419 (1,000,000 + 1,000,000), PhonePe/Google Pay, 30 days.
+- Bangladesh plans: ৳419 (500,000 + 500,000), ৳519 (700,000 + 700,000), ৳619 (1,000,000 + 1,000,000), bKash, 30 days.
 - কোনো annual plan নেই এবং app-এ UPI/bKash নম্বর দেখানো হয় না। Transaction ID pending হিসেবে জমা হয়; admin approve না করলে Prime চালু হয় না। একই UTR/Transaction ID hash-এর unique Firestore document ও Firestore transaction দিয়ে duplicate জমা আটকানো হয়; দ্বিতীয়বার দিলে “এই UTR আগেই ব্যবহার হয়েছে।” দেখায়।
-- Subscription expiry এবং per-feature premium balances server-এ থাকে না। এক feature-এর credit শেষ হলেও অন্য feature-এর balance আলাদা থাকে। Premium শেষ হলে free credits পুনরায় দেওয়া হয় না (`everPremium` flag)।
+- Subscription expiry এবং per-feature premium balances server-এ থাকে। এক feature-এর credit শেষ হলেও অন্য feature-এর balance আলাদা থাকে। Premium শেষ হলে free credits পুনরায় দেওয়া হয় না (`everPremium` flag)।
 - Admin login-এ একই IP থেকে ১৫ মিনিটে ৫টি ভুল চেষ্টার পর সাময়িক rate limit প্রয়োগ করা হয়। Admin login server-side environment variable দিয়ে শুরু হয়; পরবর্তীতে Admin Panel থেকে পাসওয়ার্ড পরিবর্তন করলে নতুন পাসওয়ার্ডের scrypt hash Firestore-এ থাকে (plain password নয়), session version বদলে পুরোনো session বাতিল হয়; cookie HttpOnly, Secure, SameSite=Strict। Admin payment approve/reject, users দেখা, chat reply/clear, review approve/reject করতে পারে। Chat clear payment records মুছে না।
 - Chat ও approved reviews Firestore-এ persist করে। Reviews admin approval ছাড়া public হয় না।
 - Optional SMS via Twilio; credentials না দিলে SMS disabled থাকবে, কিন্তু payment request pending হিসেবে database-এ সংরক্ষিত হবে।
@@ -84,3 +84,57 @@ SMS চালু করতে Vercel-এ `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKE
 5. Confirm the exact existing Vercel project is updated (not a separate project).
 6. Test payment request, duplicate transaction ID, admin approve/reject, 30-day expiry, separate balances, chat/review persistence.
 7. Consider user login/OTP before relying on device binding for paid subscriptions.
+
+
+## Chunk Processing আপডেট
+
+- `api/ai-jobs.js` নতুন Job-ভিত্তিক Chunk API। `index.html` এখন এই API ব্যবহার করে।
+- গল্প অনুচ্ছেদ/বাক্য ধরে আনুমানিক ৯০০ শব্দের Chunk-এ ভাগ হয়। প্রতিটি Chunk আলাদা Gemini request।
+- Modify-এর ফল মূল Chunk ক্রমে যুক্ত হয়। Cut-এর মধ্যবর্তী ফলাফল শেষ ধাপে আবার একত্রে Gemini-কে দিয়ে চরিত্রভিত্তিক সাজানো হয়।
+- প্রতিটি Chunk Firestore `aiJobs/{jobId}/chunks`-এ রাখা হয়। Job `aiJobs/{jobId}`-এ থাকে।
+- সব Chunk সফল এবং Finalize সফল হলেই Firestore transaction-এ একবার ক্রেডিট কাটা হয়। `charged` flag একই Job-এ পুনরায় চার্জ ঠেকায়।
+- ব্যর্থ Chunk একই Job ID দিয়ে Retry করা যায়; UI-তে স্বয়ংক্রিয়ভাবে সর্বোচ্চ ৩ বার চেষ্টা হয়।
+- Gemini API key এবং Firebase credentials শুধু Vercel Environment Variables-এ রাখুন।
+
+### গুরুত্বপূর্ণ সীমাবদ্ধতা
+
+1. এটি background worker নয়; ব্রাউজার ধারাবাহিকভাবে ছোট API request চালায়। ব্যবহারকারী পেজ বন্ধ করলে কাজ থেমে যেতে পারে। Job ও Chunk-এর অবস্থা Firestore-এ থাকে, তবে বর্তমান UI-তে পেজ রিফ্রেশের পর স্বয়ংক্রিয় Resume UI নেই।
+2. Cut-এর শেষ Global Aggregation request-এ অনেক বড় মধ্যবর্তী ফলাফল হলে সেটিও Token/Timeout সীমায় পড়তে পারে। তাই ২০,০০০ শব্দের সব গল্পে সাফল্যের নিশ্চয়তা নেই।
+3. Free Tier-এর Gemini request/rate/token limits পরিবর্তনশীল; অতিরিক্ত Chunk হলে 429/503 আসতে পারে।
+4. Firestore document 1 MiB সীমা মাথায় রেখে Chunk আকার রাখা হয়েছে; বড় আউটপুট হলে একটি Chunk document-ও সীমা ছুঁতে পারে। বাস্তব গল্প দিয়ে পরীক্ষা করুন।
+5. নতুন `aiJobs` collection-এ authenticated deviceId-ভিত্তিক access server-side; Firestore client rules-এ client access বন্ধ রাখুন।
+6. পুরোনো `api/ai.js` ফাইলটি compatibility-এর জন্য রাখা হয়েছে; UI নতুন `api/ai-jobs.js` ব্যবহার করে। চাইলে deploy-এর আগে পুরোনো route সরিয়ে ফেলা যায়, তবে এখনই প্রয়োজন নেই।
+
+### Deploy checklist
+
+- `GEMINI_API_KEY`, `GEMINI_MODEL`, `FIREBASE_SERVICE_ACCOUNT_BASE64`, `SESSION_SECRET`, `ADMIN_PASSWORD` environment variables যাচাই করুন; secret value কাউকে পাঠাবেন না।
+- Firebase Firestore চালু আছে কি না এবং সার্ভার Service Account-এ read/write permission আছে কি না যাচাই করুন।
+- Deploy-এর পর 100–300 শব্দ, প্রায় 2,000 শব্দ, তারপর বড় গল্প দিয়ে Modify ও Cut আলাদাভাবে পরীক্ষা করুন।
+- একই Job-এ Chunk retry, incomplete finalize এবং একবারের বেশি credit charge না হওয়া পরীক্ষা করুন।
+
+
+## Chunk Processing আপডেট
+
+- `api/ai-jobs.js` নতুন Job-ভিত্তিক Chunk API। `index.html` এখন এই API ব্যবহার করে।
+- গল্প অনুচ্ছেদ/বাক্য ধরে আনুমানিক ৯০০ শব্দের Chunk-এ ভাগ হয়। প্রতিটি Chunk আলাদা Gemini request।
+- Modify-এর ফল মূল Chunk ক্রমে যুক্ত হয়। Cut-এর মধ্যবর্তী ফলাফল শেষ ধাপে আবার একত্রে Gemini-কে দিয়ে চরিত্রভিত্তিক সাজানো হয়।
+- প্রতিটি Chunk Firestore `aiJobs/{jobId}/chunks`-এ রাখা হয়। Job `aiJobs/{jobId}`-এ থাকে।
+- সব Chunk সফল এবং Finalize সফল হলেই Firestore transaction-এ একবার ক্রেডিট কাটা হয়। `charged` flag একই Job-এ পুনরায় চার্জ ঠেকায়।
+- ব্যর্থ Chunk একই Job ID দিয়ে Retry করা যায়; UI-তে স্বয়ংক্রিয়ভাবে সর্বোচ্চ ৩ বার চেষ্টা হয়।
+- Gemini API key এবং Firebase credentials শুধু Vercel Environment Variables-এ রাখুন।
+
+### গুরুত্বপূর্ণ সীমাবদ্ধতা
+
+1. এটি background worker নয়; ব্রাউজার ধারাবাহিকভাবে ছোট API request চালায়। ব্যবহারকারী পেজ বন্ধ করলে কাজ থেমে যেতে পারে। Job ও Chunk-এর অবস্থা Firestore-এ থাকে, তবে বর্তমান UI-তে পেজ রিফ্রেশের পর স্বয়ংক্রিয় Resume UI নেই।
+2. Cut-এর শেষ Global Aggregation request-এ অনেক বড় মধ্যবর্তী ফলাফল হলে সেটিও Token/Timeout সীমায় পড়তে পারে। তাই ২০,০০০ শব্দের সব গল্পে সাফল্যের নিশ্চয়তা নেই।
+3. Free Tier-এর Gemini request/rate/token limits পরিবর্তনশীল; অতিরিক্ত Chunk হলে 429/503 আসতে পারে।
+4. Firestore document 1 MiB সীমা মাথায় রেখে Chunk আকার রাখা হয়েছে; বড় আউটপুট হলে একটি Chunk document-ও সীমা ছুঁতে পারে। বাস্তব গল্প দিয়ে পরীক্ষা করুন।
+5. নতুন `aiJobs` collection-এ authenticated deviceId-ভিত্তিক access server-side; Firestore client rules-এ client access বন্ধ রাখুন।
+6. পুরোনো `api/ai.js` ফাইলটি compatibility-এর জন্য রাখা হয়েছে; UI নতুন `api/ai-jobs.js` ব্যবহার করে। চাইলে deploy-এর আগে পুরোনো route সরিয়ে ফেলা যায়, তবে এখনই প্রয়োজন নেই।
+
+### Deploy checklist
+
+- `GEMINI_API_KEY`, `GEMINI_MODEL`, `FIREBASE_SERVICE_ACCOUNT_BASE64`, `SESSION_SECRET`, `ADMIN_PASSWORD` environment variables যাচাই করুন; secret value কাউকে পাঠাবেন না।
+- Firebase Firestore চালু আছে কি না এবং সার্ভার Service Account-এ read/write permission আছে কি না যাচাই করুন।
+- Deploy-এর পর 100–300 শব্দ, প্রায় 2,000 শব্দ, তারপর বড় গল্প দিয়ে Modify ও Cut আলাদাভাবে পরীক্ষা করুন।
+- একই Job-এ Chunk retry, incomplete finalize এবং একবারের বেশি credit charge না হওয়া পরীক্ষা করুন।
