@@ -5,6 +5,7 @@ const MAX_WORDS = 20000;
 const CHUNK_WORDS = 1000;
 const MODIFY_CHUNK_WORDS = 1000;
 const MODELS = [...new Set([process.env.GEMINI_MODEL, 'gemini-2.0-flash', 'gemini-flash-latest', 'gemini-1.5-flash'].filter(Boolean))];
+const MODIFY_MODEL = 'gemini-3.8-flash';
 function canTryNextModel(error) { return error?.message === 'AI_TIMEOUT' || [404, 503].includes(Number(error?.status)); }
 function getSystemInstruction(feature) {
   if (feature === 'modify') {
@@ -112,14 +113,14 @@ async function geminiStreamToResponse(text, feature, res) {
   const key=process.env.GEMINI_API_KEY; if(!key) throw new Error('AI_NOT_CONFIGURED');
   const system=getSystemInstruction(feature);
   let lastError;
-  for (const model of MODELS) {
+  for (const model of [MODIFY_MODEL]) {
     const controller=new AbortController();
     const timeout=setTimeout(()=>controller.abort(),55000);
     let emitted=false;
     try {
       const response=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(key)}`,{
         method:'POST',headers:{'Content-Type':'application/json'},signal:controller.signal,
-        body:JSON.stringify({systemInstruction:{parts:[{text:system}]},contents:[{role:'user',parts:[{text}]}],generationConfig:{temperature:0.1,maxOutputTokens:32768}})
+        body:JSON.stringify({systemInstruction:{parts:[{text:system}]},contents:[{role:'user',parts:[{text}]}],generationConfig:{maxOutputTokens:32768,thinkingConfig:{thinkingLevel:"MEDIUM"}}})
       });
       if(!response.ok){const body=await response.text().catch(()=> '');const err=new Error(`Gemini HTTP ${response.status}: ${body.slice(0,500)}`);err.status=response.status;throw err;}
       res.statusCode=200;res.setHeader('Content-Type','text/event-stream; charset=utf-8');res.setHeader('Cache-Control','no-cache, no-transform');res.setHeader('Connection','keep-alive');res.setHeader('X-Accel-Buffering','no');
