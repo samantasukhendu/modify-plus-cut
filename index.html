@@ -34,7 +34,27 @@ function clearResult(feature){const box=$(feature+'ResultBox'),out=$(feature+'Re
 function showProgress(feature){const btn=$(feature+'RunBtn');let progress=$(feature+'Progress');if(!progress){progress=document.createElement('div');progress.id=feature+'Progress';progress.className='item';btn.parentNode.insertAdjacentElement('afterend',progress)}progress.textContent='আপনার গল্পটি প্রস্তুত করা হচ্ছে…';return progress}
 async function getJobStatus(jobId,includeChunks=false,includeResults=false){return api('ai-jobs',{method:'POST',body:JSON.stringify({action:'status',jobId,includeChunks,includeResults})})}
 async function runChunkBatch(feature,jobId,indices,progress,total){const requests=indices.map(index=>api('ai-jobs',{method:'POST',body:JSON.stringify({action:'process',jobId,index})}).then(()=>({index,ok:true})).catch(error=>({index,ok:false,error})));return Promise.all(requests)}
-async function finishExistingJob(feature,jobId,progress){const final=await api('ai-jobs',{method:'POST',body:JSON.stringify({action:'finalize',jobId})});const out=$(feature+'Result'),box=$(feature+'ResultBox'),count=$(feature+'Count');out.textContent=final.result;count.textContent=`Input: ${final.inputWords.toLocaleString()} words · Output: ${final.outputWords.toLocaleString()} words`;box.classList.remove('hidden');localStorage.removeItem('mpc_job_'+feature);progress.textContent='সম্পন্ন হয়েছে।';await refreshUsage()}
+function renderCutCards(result){
+ const out=$('cutResult');out.textContent='';
+ const pattern=/\[CHARACTER:\s*([^\]]+)\]\s*([\s\S]*?)(?=\n\s*\[CHARACTER:|$)/g;
+ const sections=[];let match;
+ while((match=pattern.exec(String(result||'')))!==null){
+  const name=match[1].trim(),text=match[2].trim();
+  if(text)sections.push({name,text});
+ }
+ if(!sections.length){out.textContent=String(result||'');return}
+ sections.forEach(section=>{
+  const card=document.createElement('div');card.className='item';card.style.margin='10px 0';
+  const head=document.createElement('div');head.className='row';head.style.justifyContent='space-between';head.style.alignItems='center';
+  const title=document.createElement('strong');title.textContent=section.name;
+  const copy=document.createElement('button');copy.type='button';copy.className='copy-btn';copy.textContent='📋 Copy';
+  copy.onclick=async()=>{try{await copyValue(section.text);showCopyToast();copy.textContent='✓ Copied';setTimeout(()=>copy.textContent='📋 Copy',1500)}catch{showCopyToast('Copy failed')}};
+  head.append(title,copy);
+  const body=document.createElement('div');body.className='output';body.style.marginTop='8px';body.textContent=section.text;
+  card.append(head,body);out.appendChild(card);
+ });
+}
+async function finishExistingJob(feature,jobId,progress){const final=await api('ai-jobs',{method:'POST',body:JSON.stringify({action:'finalize',jobId})});const out=$(feature+'Result'),box=$(feature+'ResultBox'),count=$(feature+'Count');if(feature==='cut')renderCutCards(final.result);else out.textContent=final.result;count.textContent=`Input: ${final.inputWords.toLocaleString()} words · Output: ${final.outputWords.toLocaleString()} words`;box.classList.remove('hidden');localStorage.removeItem('mpc_job_'+feature);progress.textContent='সম্পন্ন হয়েছে।';await refreshUsage()}
 async function streamModifyPart(jobId,index,out){
  const response=await fetch('/api/ai-jobs',{method:'POST',headers:{'Content-Type':'application/json','X-Device-ID':getDeviceId()},credentials:'same-origin',body:JSON.stringify({action:'process-stream',jobId,index})});
  if(!response.ok){let d={};try{d=await response.json()}catch{}throw new Error(d.error||`Request failed (${response.status})`)}
