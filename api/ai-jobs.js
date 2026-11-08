@@ -5,7 +5,6 @@ const MAX_WORDS = 20000;
 const CHUNK_WORDS = 1000;
 const MODIFY_CHUNK_WORDS = 1000;
 const MODELS = [...new Set([process.env.GEMINI_MODEL, 'gemini-2.0-flash', 'gemini-flash-latest', 'gemini-1.5-flash'].filter(Boolean))];
-const MODIFY_MODEL = 'gemini-3.8-flash';
 function canTryNextModel(error) { return error?.message === 'AI_TIMEOUT' || [404, 503].includes(Number(error?.status)); }
 function getSystemInstruction(feature) {
   if (feature === 'modify') {
@@ -90,7 +89,7 @@ async function gemini(text, feature, mode='chunk') {
   let lastError;
   for (const model of MODELS) {
     const controller=new AbortController();
-    const timeout=setTimeout(()=>controller.abort(),50000);
+    const timeout=setTimeout(()=>controller.abort(),60000);
     try {
       const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`,{
         method:'POST',headers:{'Content-Type':'application/json'},signal:controller.signal,
@@ -112,36 +111,106 @@ async function gemini(text, feature, mode='chunk') {
 async function geminiStreamToResponse(text, feature, res) {
   const key=process.env.GEMINI_API_KEY; if(!key) throw new Error('AI_NOT_CONFIGURED');
   const system=getSystemInstruction(feature);
+  const MODIFY_MODELS = ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite', 'gemini-3.8-flash'];
+  const PER_MODEL_TIMEOUT = 20000; // প্রতি মডেলের জন্য 20 সেকেন্ড
+  const thinkingLevels = {
+    'gemini-3.1-flash-lite': 'MINIMAL',
+    'gemini-3.5-flash-lite': 'MINIMAL',
+    'gemini-3.8-flash': 'MEDIUM'
+  };
   let lastError;
-  for (const model of [MODIFY_MODEL]) {
-    const controller=new AbortController();
-    const timeout=setTimeout(()=>controller.abort(),55000);
-    let emitted=false;
+
+  for (const model of MODIFY_MODELS) {
+    const controller = new AbortController();
+    let timeoutId;
     try {
-      const response=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(key)}`,{
-        method:'POST',headers:{'Content-Type':'application/json'},signal:controller.signal,
-        body:JSON.stringify({systemInstruction:{parts:[{text:system}]},contents:[{role:'user',parts:[{text}]}],generationConfig:{maxOutputTokens:8192,thinkingConfig:{thinkingLevel:"LOW"}}})
-      });
-      if(!response.ok){const body=await response.text().catch(()=> '');const err=new Error(`Gemini HTTP ${response.status}: ${body.slice(0,500)}`);err.status=response.status;throw err;}
-      res.statusCode=200;res.setHeader('Content-Type','text/event-stream; charset=utf-8');res.setHeader('Cache-Control','no-cache, no-transform');res.setHeader('Connection','keep-alive');res.setHeader('X-Accel-Buffering','no');
-      let buffer='',full='';
-      const reader=response.body.getReader();const decoder=new TextDecoder();
-      while(true){const {value,done}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});let split;
-        while((split=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,split).trim();buffer=buffer.slice(split+1);if(!line.startsWith('data:'))continue;const raw=line.slice(5).trim();if(!raw||raw==='[DONE]')continue;
-          let packet;try{packet=JSON.parse(raw)}catch{continue;}
-          const candidate=packet.candidates?.[0];const delta=(candidate?.content?.parts||[]).map(x=>x.text||'').join('');
-          if(delta){full+=delta;emitted=true;res.write(`data: ${JSON.stringify({text:delta})}\n\n`);}
-          if(candidate?.finishReason==='MAX_TOKENS')throw new Error('AI_INCOMPLETE');
+      // প্রতিটি মডেলের সম্পূর্ণ fetch + stream read-কে একই 20 সেকেন্ডের মধ্যে রাখে।
+      const modelRequest = (async () => {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(key)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: system }] },
+            contents: [{ role: 'user', parts: [{ text }] }],
+            generationConfig: {
+              maxOutputTokens: 32768,
+              thinkingConfig: { thinkingLevel: thinkingLevels[model] }
+            }
+          })
+        });
+
+        if (!response.ok) {
+          const body = await response.text().catch(() => '');
+          const err = new Error(`Gemini HTTP ${response.status}: ${body.slice(0, 500)}`);
+          err.status = response.status;
+          throw err;
         }
+
+        let buffer = '', full = '';
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let split;
+          while ((split = buffer.indexOf('\n')) >= 0) {
+            const line = buffer.slice(0, split).trim();
+            buffer = buffer.slice(split + 1);
+            if (!line.startsWith('data:')) continue;
+            const raw = line.slice(5).trim();
+            if (!raw || raw === '[DONE]') continue;
+            let packet;
+            try { packet = JSON.parse(raw); } catch { continue; }
+            const candidate = packet.candidates?.[0];
+            const delta = (candidate?.content?.parts || []).map(x => x.text || '').join('');
+            if (delta) full += delta;
+            if (candidate?.finishReason === 'MAX_TOKENS') throw new Error('AI_INCOMPLETE');
+          }
+        }
+        full = full.trim();
+        if (!full) throw new Error('AI_EMPTY_RESULT');
+        return full;
+      })();
+
+      const timeoutPromise = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+          controller.abort();
+          const error = new Error('AI_TIMEOUT');
+          error.code = 'AI_TIMEOUT';
+          reject(error);
+        }, PER_MODEL_TIMEOUT);
+      });
+
+      // Promise.race enforces the per-model deadline; AbortController stops its fetch.
+      const full = await Promise.race([modelRequest, timeoutPromise]);
+      clearTimeout(timeoutId);
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      // Emit only after a model completes, so a timed-out model cannot duplicate partial text.
+      res.write(`data: ${JSON.stringify({ text: full })}\n\n`);
+      res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+      return full;
+    } catch (e) {
+      clearTimeout(timeoutId);
+      lastError = e.name === 'AbortError' ? new Error('AI_TIMEOUT') : e;
+      const message = String(lastError.message || '');
+      const isMissingModel = Number(lastError.status) === 404 || /not found|deprecated/i.test(message);
+      if (isMissingModel) {
+        console.error(`[ai-jobs] Modify model unavailable/deprecated: ${model} — ${message}`);
+        continue;
       }
-      full=full.trim();if(!full)throw new Error('AI_EMPTY_RESULT');
-      res.write(`data: ${JSON.stringify({done:true})}\n\n`);return full;
-    } catch(e) {
-      lastError=e.name==='AbortError'?new Error('AI_TIMEOUT'):e;
-      // Once text has reached the browser, switching models could duplicate story text.
-      if(emitted || !canTryNextModel(lastError)) throw lastError;
-      console.warn(`[ai-jobs] streaming model ${model} failed before output; trying fallback`,lastError.message);
-    } finally { clearTimeout(timeout); }
+      if (lastError.message === 'AI_TIMEOUT') {
+        console.warn(`[ai-jobs] Modify model timed out after ${PER_MODEL_TIMEOUT}ms: ${model}`);
+        continue;
+      }
+      console.error(`[ai-jobs] Modify model failed: ${model} — ${message}`);
+      // Other API errors also move to the next candidate; all attempts remain capped at 20s each.
+    }
   }
   throw lastError || new Error('AI_ERROR');
 }
@@ -183,7 +252,7 @@ export default async function handler(req,res){
    await cr.set({status:'processing',attempts:FieldValue.increment(1),updatedAt:FieldValue.serverTimestamp()},{merge:true});
    let result='';
    try { result=await geminiStreamToResponse(cs.data().text,'modify',res); await cr.set({status:'completed',result,updatedAt:FieldValue.serverTimestamp(),error:null},{merge:true}); }
-   catch(e){await cr.set({status:'failed',error:String(e.message||'AI_ERROR').slice(0,300),updatedAt:FieldValue.serverTimestamp()},{merge:true});console.error('[ai-jobs] modify stream failed',e);if(!res.headersSent)return json(res,502,{code:'CHUNK_FAILED',error:'Modify অংশটি সম্পন্ন হয়নি।'});res.write(`event: error\ndata: ${JSON.stringify({error:'এই অংশটি সম্পন্ন করা যায়নি।'})}\n\n`);}
+   catch(e){await cr.set({status:'failed',error:String(e.message||'AI_ERROR').slice(0,300),updatedAt:FieldValue.serverTimestamp()},{merge:true});console.error('[ai-jobs] modify stream failed',e);const userMessage='দুঃখিত, এই মুহূর্তে Modify সম্পন্ন করা যাচ্ছে না। অনুগ্রহ করে কিছুক্ষণ পর আবার চেষ্টা করুন।';if(!res.headersSent)return json(res,502,{code:'CHUNK_FAILED',error:userMessage});res.write(`event: error\ndata: ${JSON.stringify({error:userMessage})}\n\n`);}
    if(res.headersSent){res.end();return;}
    return;
   }
